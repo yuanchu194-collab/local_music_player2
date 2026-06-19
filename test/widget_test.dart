@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:local_music_player2/data/repositories/song_repository.dart';
 import 'package:local_music_player2/main.dart';
+import 'package:local_music_player2/models/playback_mode.dart';
 import 'package:local_music_player2/models/song.dart';
 import 'package:local_music_player2/services/audio_player_service.dart';
 
@@ -23,6 +24,7 @@ void main() {
     expect(find.text('Play all'), findsOneWidget);
     expect(find.text('No song playing'), findsOneWidget);
     expect(find.text('Play'), findsOneWidget);
+    expect(find.text('Sequence'), findsOneWidget);
   });
 }
 
@@ -55,10 +57,19 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
   Song? get currentSong => null;
 
   @override
+  PlaybackMode get playbackMode => PlaybackMode.sequence;
+
+  @override
+  double get volume => 1;
+
+  @override
   Stream<String?> get currentFileStream => const Stream.empty();
 
   @override
   Stream<Song?> get currentSongStream => const Stream.empty();
+
+  @override
+  Stream<PlaybackMode> get playbackModeStream => const Stream.empty();
 
   @override
   Stream<Duration> get durationStream => const Stream.empty();
@@ -68,6 +79,12 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
 
   @override
   Stream<Duration> get positionStream => const Stream.empty();
+
+  @override
+  Stream<double> get volumeStream => const Stream.empty();
+
+  @override
+  Future<void> cyclePlaybackMode() async {}
 
   @override
   Future<void> dispose() async {}
@@ -107,6 +124,12 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
 
   @override
   Future<void> seek(Duration position) async {}
+
+  @override
+  Future<void> setPlaybackMode(PlaybackMode mode) async {}
+
+  @override
+  Future<void> setVolume(double volume) async {}
 
   @override
   Future<void> togglePlayPause() async {}

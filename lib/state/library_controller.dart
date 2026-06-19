@@ -47,15 +47,18 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> setCurrentSong(Song? song) async {
-    if (_currentSong?.id == song?.id) {
-      return;
+    final isSameSong = _currentSong?.id == song?.id;
+    if (!isSameSong) {
+      _currentSong = song;
+      notifyListeners();
     }
-
-    _currentSong = song;
-    notifyListeners();
 
     if (song != null) {
       await songRepository.markPlayed(song);
+    }
+
+    if (isSameSong) {
+      return;
     }
   }
 

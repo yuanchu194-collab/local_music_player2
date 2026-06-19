@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 
 import 'data/db/app_database.dart';
 import 'data/repositories/song_repository.dart';
+import 'models/playback_mode.dart';
 import 'models/song.dart';
 import 'services/audio_player_service.dart';
 import 'state/library_controller.dart';
@@ -215,6 +216,20 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  Future<void> _cyclePlaybackMode() async {
+    await _runPlaybackAction(
+      widget.audioPlayerService.cyclePlaybackMode,
+      errorMessage: 'Unable to change playback mode.',
+    );
+  }
+
+  Future<void> _setVolume(double volume) async {
+    await _runPlaybackAction(
+      () => widget.audioPlayerService.setVolume(volume),
+      errorMessage: 'Unable to change volume.',
+    );
+  }
+
   Future<void> _runPlaybackAction(
     Future<void> Function() action, {
     required String errorMessage,
@@ -294,6 +309,8 @@ class _PlayerPageState extends State<PlayerPage> {
                     onTogglePlayPause: _togglePlayPause,
                     onPrevious: _previous,
                     onNext: _next,
+                    onCyclePlaybackMode: _cyclePlaybackMode,
+                    onVolumeChanged: _setVolume,
                   ),
                   if (_errorMessage != null) ...[
                     const SizedBox(height: 16),
@@ -548,6 +565,8 @@ class _PlaybackPanel extends StatelessWidget {
     required this.onTogglePlayPause,
     required this.onPrevious,
     required this.onNext,
+    required this.onCyclePlaybackMode,
+    required this.onVolumeChanged,
   });
 
   final AudioPlayerServiceBase audioPlayerService;
@@ -561,6 +580,8 @@ class _PlaybackPanel extends StatelessWidget {
   final Future<void> Function(bool isPlaying) onTogglePlayPause;
   final VoidCallback onPrevious;
   final VoidCallback onNext;
+  final VoidCallback onCyclePlaybackMode;
+  final ValueChanged<double> onVolumeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -570,73 +591,124 @@ class _PlaybackPanel extends StatelessWidget {
       builder: (context, playingSnapshot) {
         final isPlaying = playingSnapshot.data ?? false;
 
-        return StreamBuilder<Duration>(
-          stream: audioPlayerService.durationStream,
-          initialData: Duration.zero,
-          builder: (context, durationSnapshot) {
-            final duration = durationSnapshot.data ?? Duration.zero;
+        return StreamBuilder<PlaybackMode>(
+          stream: audioPlayerService.playbackModeStream,
+          initialData: audioPlayerService.playbackMode,
+          builder: (context, playbackModeSnapshot) {
+            final playbackMode =
+                playbackModeSnapshot.data ?? PlaybackMode.sequence;
 
-            return StreamBuilder<Duration>(
-              stream: audioPlayerService.positionStream,
-              initialData: Duration.zero,
-              builder: (context, positionSnapshot) {
-                final position = positionSnapshot.data ?? Duration.zero;
-                final maxMs = math.max(duration.inMilliseconds.toDouble(), 1);
-                final rawValue = isSeeking
-                    ? seekPreviewMs
-                    : position.inMilliseconds.toDouble();
-                final sliderValue = rawValue.clamp(0, maxMs).toDouble();
+            return StreamBuilder<double>(
+              stream: audioPlayerService.volumeStream,
+              initialData: audioPlayerService.volume,
+              builder: (context, volumeSnapshot) {
+                final volume = volumeSnapshot.data ?? 1;
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Slider(
-                      value: sliderValue,
-                      min: 0,
-                      max: maxMs.toDouble(),
-                      onChangeStart: hasCurrentSong ? onSeekStart : null,
-                      onChanged: hasCurrentSong ? onSeekChanged : null,
-                      onChangeEnd: hasCurrentSong ? onSeekEnd : null,
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _formatDuration(
-                            Duration(milliseconds: sliderValue.round()),
-                          ),
-                        ),
-                        Text(_formatNullableDuration(duration)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        IconButton.filledTonal(
-                          onPressed: hasCurrentSong ? onPrevious : null,
-                          tooltip: 'Previous',
-                          icon: const Icon(Icons.skip_previous),
-                        ),
-                        const SizedBox(width: 12),
-                        FilledButton.icon(
-                          onPressed: canPlayback
-                              ? () => onTogglePlayPause(isPlaying)
-                              : null,
-                          icon: Icon(
-                            isPlaying ? Icons.pause : Icons.play_arrow,
-                          ),
-                          label: Text(isPlaying ? 'Pause' : 'Play'),
-                        ),
-                        const SizedBox(width: 12),
-                        IconButton.filledTonal(
-                          onPressed: hasCurrentSong ? onNext : null,
-                          tooltip: 'Next',
-                          icon: const Icon(Icons.skip_next),
-                        ),
-                      ],
-                    ),
-                  ],
+                return StreamBuilder<Duration>(
+                  stream: audioPlayerService.durationStream,
+                  initialData: Duration.zero,
+                  builder: (context, durationSnapshot) {
+                    final duration = durationSnapshot.data ?? Duration.zero;
+
+                    return StreamBuilder<Duration>(
+                      stream: audioPlayerService.positionStream,
+                      initialData: Duration.zero,
+                      builder: (context, positionSnapshot) {
+                        final position = positionSnapshot.data ?? Duration.zero;
+                        final maxMs = math.max(
+                          duration.inMilliseconds.toDouble(),
+                          1,
+                        );
+                        final rawValue = isSeeking
+                            ? seekPreviewMs
+                            : position.inMilliseconds.toDouble();
+                        final sliderValue = rawValue.clamp(0, maxMs).toDouble();
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Slider(
+                              value: sliderValue,
+                              min: 0,
+                              max: maxMs.toDouble(),
+                              onChangeStart: hasCurrentSong
+                                  ? onSeekStart
+                                  : null,
+                              onChanged: hasCurrentSong ? onSeekChanged : null,
+                              onChangeEnd: hasCurrentSong ? onSeekEnd : null,
+                            ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  _formatDuration(
+                                    Duration(milliseconds: sliderValue.round()),
+                                  ),
+                                ),
+                                Text(_formatNullableDuration(duration)),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              alignment: WrapAlignment.center,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              spacing: 12,
+                              runSpacing: 8,
+                              children: [
+                                IconButton.filledTonal(
+                                  onPressed: hasCurrentSong ? onPrevious : null,
+                                  tooltip: 'Previous',
+                                  icon: const Icon(Icons.skip_previous),
+                                ),
+                                FilledButton.icon(
+                                  onPressed: canPlayback
+                                      ? () => onTogglePlayPause(isPlaying)
+                                      : null,
+                                  icon: Icon(
+                                    isPlaying ? Icons.pause : Icons.play_arrow,
+                                  ),
+                                  label: Text(isPlaying ? 'Pause' : 'Play'),
+                                ),
+                                IconButton.filledTonal(
+                                  onPressed: hasCurrentSong ? onNext : null,
+                                  tooltip: 'Next',
+                                  icon: const Icon(Icons.skip_next),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: onCyclePlaybackMode,
+                                  icon: Icon(_playbackModeIcon(playbackMode)),
+                                  label: Text(_playbackModeLabel(playbackMode)),
+                                ),
+                                SizedBox(
+                                  width: 220,
+                                  child: Row(
+                                    children: [
+                                      const Icon(Icons.volume_up, size: 20),
+                                      Expanded(
+                                        child: Slider(
+                                          value: volume.clamp(0, 1).toDouble(),
+                                          min: 0,
+                                          max: 1,
+                                          onChanged: onVolumeChanged,
+                                        ),
+                                      ),
+                                      SizedBox(
+                                        width: 40,
+                                        child: Text(
+                                          '${(volume * 100).round()}%',
+                                          textAlign: TextAlign.right,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                  },
                 );
               },
             );
@@ -701,4 +773,22 @@ String _formatDuration(Duration duration) {
   final minutes = totalSeconds ~/ 60;
   final seconds = totalSeconds % 60;
   return '$minutes:${seconds.toString().padLeft(2, '0')}';
+}
+
+String _playbackModeLabel(PlaybackMode mode) {
+  return switch (mode) {
+    PlaybackMode.sequence => 'Sequence',
+    PlaybackMode.repeatAll => 'Repeat all',
+    PlaybackMode.repeatOne => 'Repeat one',
+    PlaybackMode.shuffle => 'Shuffle',
+  };
+}
+
+IconData _playbackModeIcon(PlaybackMode mode) {
+  return switch (mode) {
+    PlaybackMode.sequence => Icons.trending_flat,
+    PlaybackMode.repeatAll => Icons.repeat,
+    PlaybackMode.repeatOne => Icons.repeat_one,
+    PlaybackMode.shuffle => Icons.shuffle,
+  };
 }
