@@ -55,6 +55,7 @@ class LibraryController extends ChangeNotifier {
 
     if (song != null) {
       await songRepository.markPlayed(song);
+      _markSongPlayedLocally(song);
     }
 
     if (isSameSong) {
@@ -81,7 +82,41 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> toggleFavorite(Song song) async {
+    final index = _songs.indexWhere((candidate) => candidate.id == song.id);
+    if (index == -1) {
+      return;
+    }
+
+    final nextValue = !_songs[index].isFavorite;
+    await songRepository.setFavorite(_songs[index], nextValue);
+
+    final updated = _songs[index].copyWith(isFavorite: nextValue);
+    _songs[index] = updated;
+
+    if (_currentSong?.id == updated.id) {
+      _currentSong = updated;
+    }
+
+    notifyListeners();
+  }
+
   int indexOfAvailableSong(Song song) {
     return availableSongs.indexWhere((candidate) => candidate.id == song.id);
+  }
+
+  void _markSongPlayedLocally(Song song) {
+    final index = _songs.indexWhere((candidate) => candidate.id == song.id);
+    if (index == -1) {
+      return;
+    }
+
+    final updated = _songs[index].copyWith(
+      playCount: _songs[index].playCount + 1,
+      lastPlayedAt: DateTime.now(),
+    );
+    _songs[index] = updated;
+    _currentSong = updated;
+    notifyListeners();
   }
 }

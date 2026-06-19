@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -7,10 +6,14 @@ import 'package:media_kit/media_kit.dart';
 
 import 'data/db/app_database.dart';
 import 'data/repositories/song_repository.dart';
-import 'models/playback_mode.dart';
 import 'models/song.dart';
 import 'services/audio_player_service.dart';
 import 'state/library_controller.dart';
+import 'widgets/app_sidebar.dart';
+import 'widgets/app_top_bar.dart';
+import 'widgets/mini_player_bar.dart';
+import 'widgets/song_list_table.dart';
+import 'widgets/stat_card.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -53,9 +56,10 @@ class _MelodyBoxAppState extends State<MelodyBoxApp> {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF22A96B)),
+        scaffoldBackgroundColor: const Color(0xFFF6F8F7),
         useMaterial3: true,
       ),
-      home: PlayerPage(
+      home: MainShellPage(
         audioPlayerService: _audioPlayerService,
         songRepository: _songRepository,
       ),
@@ -63,8 +67,8 @@ class _MelodyBoxAppState extends State<MelodyBoxApp> {
   }
 }
 
-class PlayerPage extends StatefulWidget {
-  const PlayerPage({
+class MainShellPage extends StatefulWidget {
+  const MainShellPage({
     super.key,
     required this.audioPlayerService,
     required this.songRepository,
@@ -74,14 +78,17 @@ class PlayerPage extends StatefulWidget {
   final SongRepositoryBase songRepository;
 
   @override
-  State<PlayerPage> createState() => _PlayerPageState();
+  State<MainShellPage> createState() => _MainShellPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
+class _MainShellPageState extends State<MainShellPage> {
   late final LibraryController _libraryController;
+  late final TextEditingController _searchController;
   late final StreamSubscription<Song?> _currentSongSubscription;
   late final StreamSubscription<Duration> _durationSubscription;
 
+  AppSection _selectedSection = AppSection.home;
+  String _searchQuery = '';
   String? _errorMessage;
   bool _isSeeking = false;
   double _seekPreviewMs = 0;
@@ -89,6 +96,7 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
+    _searchController = TextEditingController();
     _libraryController = LibraryController(
       songRepository: widget.songRepository,
     );
@@ -105,6 +113,7 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     _currentSongSubscription.cancel();
     _durationSubscription.cancel();
+    _searchController.dispose();
     _libraryController.dispose();
     super.dispose();
   }
@@ -130,40 +139,40 @@ class _PlayerPageState extends State<PlayerPage> {
       }
 
       await _libraryController.importFiles(paths);
+      _selectSection(AppSection.library);
     } catch (error) {
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _errorMessage = 'Unable to import the selected audio files.';
+        _errorMessage = '无法导入所选音频文件。';
       });
     }
   }
 
   Future<void> _playAll() async {
-    final songs = _libraryController.availableSongs;
+    final songs = _filteredSongs(availableOnly: true);
     if (songs.isEmpty) {
       return;
     }
 
     await _runPlaybackAction(
       () => widget.audioPlayerService.playQueue(songs: songs, startIndex: 0),
-      errorMessage: 'Unable to play the library.',
+      errorMessage: '无法播放音乐库。',
     );
   }
 
   Future<void> _playSong(Song song) async {
     if (!song.isAvailable) {
       setState(() {
-        _errorMessage =
-            'This file is unavailable. It may have been moved or deleted.';
+        _errorMessage = '该文件不可用，可能已被移动或删除。';
       });
       return;
     }
 
-    final songs = _libraryController.availableSongs;
-    final index = _libraryController.indexOfAvailableSong(song);
+    final songs = _filteredSongs(availableOnly: true);
+    final index = songs.indexWhere((candidate) => candidate.id == song.id);
     if (index == -1) {
       return;
     }
@@ -171,13 +180,13 @@ class _PlayerPageState extends State<PlayerPage> {
     await _runPlaybackAction(
       () =>
           widget.audioPlayerService.playQueue(songs: songs, startIndex: index),
-      errorMessage: 'Unable to play this song.',
+      errorMessage: '无法播放这首歌。',
     );
   }
 
   Future<void> _togglePlayPause(bool isPlaying) async {
     final currentSong = _libraryController.currentSong;
-    final songs = _libraryController.availableSongs;
+    final songs = _filteredSongs(availableOnly: true);
     if (currentSong == null && songs.isEmpty) {
       return;
     }
@@ -190,7 +199,7 @@ class _PlayerPageState extends State<PlayerPage> {
       } else {
         await widget.audioPlayerService.resume();
       }
-    }, errorMessage: 'Playback failed.');
+    }, errorMessage: '播放失败。');
   }
 
   Future<void> _seekTo(double milliseconds) async {
@@ -198,36 +207,54 @@ class _PlayerPageState extends State<PlayerPage> {
       () => widget.audioPlayerService.seek(
         Duration(milliseconds: milliseconds.round()),
       ),
-      errorMessage: 'Unable to change playback position.',
+      errorMessage: '无法调整播放进度。',
     );
   }
 
   Future<void> _previous() async {
     await _runPlaybackAction(
       widget.audioPlayerService.previous,
-      errorMessage: 'Unable to play the previous song.',
+      errorMessage: '无法播放上一首。',
     );
   }
 
   Future<void> _next() async {
     await _runPlaybackAction(
       widget.audioPlayerService.next,
-      errorMessage: 'Unable to play the next song.',
+      errorMessage: '无法播放下一首。',
     );
   }
 
   Future<void> _cyclePlaybackMode() async {
     await _runPlaybackAction(
       widget.audioPlayerService.cyclePlaybackMode,
-      errorMessage: 'Unable to change playback mode.',
+      errorMessage: '无法切换播放模式。',
     );
   }
 
   Future<void> _setVolume(double volume) async {
     await _runPlaybackAction(
       () => widget.audioPlayerService.setVolume(volume),
-      errorMessage: 'Unable to change volume.',
+      errorMessage: '无法调整音量。',
     );
+  }
+
+  Future<void> _toggleFavorite(Song song) async {
+    setState(() {
+      _errorMessage = null;
+    });
+
+    try {
+      await _libraryController.toggleFavorite(song);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _errorMessage = '无法更新收藏状态。';
+      });
+    }
   }
 
   Future<void> _runPlaybackAction(
@@ -251,544 +278,505 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  void _selectSection(AppSection section) {
+    setState(() {
+      _selectedSection = section;
+    });
+  }
+
+  void _updateSearch(String value) {
+    setState(() {
+      _searchQuery = value.trim().toLowerCase();
+    });
+  }
+
+  List<Song> _filteredSongs({bool availableOnly = false}) {
+    final source = switch (_selectedSection) {
+      AppSection.favorites => _libraryController.songs.where(
+        (song) => song.isFavorite,
+      ),
+      _ => _libraryController.songs,
+    };
+
+    return source
+        .where((song) {
+          if (availableOnly && !song.isAvailable) {
+            return false;
+          }
+          if (_searchQuery.isEmpty) {
+            return true;
+          }
+
+          return song.title.toLowerCase().contains(_searchQuery) ||
+              song.artist.toLowerCase().contains(_searchQuery) ||
+              song.album.toLowerCase().contains(_searchQuery);
+        })
+        .toList(growable: false);
+  }
+
+  String get _pageTitle => _selectedSection.label;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('MelodyBox')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: AnimatedBuilder(
-            animation: _libraryController,
-            builder: (context, _) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _Header(
-                    songCount: _libraryController.songs.length,
-                    hasSongs: _libraryController.hasAvailableSongs,
-                    onImport: _pickAudioFiles,
-                    onPlayAll: _playAll,
-                  ),
-                  const SizedBox(height: 16),
-                  Expanded(
-                    child: _LibraryTable(
-                      songs: _libraryController.songs,
-                      currentSong: _libraryController.currentSong,
-                      isLoading: _libraryController.isLoading,
-                      onSongTap: _playSong,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _SelectedSongInfo(song: _libraryController.currentSong),
-                  const SizedBox(height: 16),
-                  _PlaybackPanel(
-                    audioPlayerService: widget.audioPlayerService,
-                    canPlayback: _libraryController.hasAvailableSongs,
-                    hasCurrentSong:
-                        _libraryController.currentSong?.isAvailable == true,
-                    isSeeking: _isSeeking,
-                    seekPreviewMs: _seekPreviewMs,
-                    onSeekStart: (value) {
-                      setState(() {
-                        _isSeeking = true;
-                        _seekPreviewMs = value;
-                      });
-                    },
-                    onSeekChanged: (value) {
-                      setState(() {
-                        _seekPreviewMs = value;
-                      });
-                    },
-                    onSeekEnd: (value) async {
-                      setState(() {
-                        _isSeeking = false;
-                      });
-                      await _seekTo(value);
-                    },
-                    onTogglePlayPause: _togglePlayPause,
-                    onPrevious: _previous,
-                    onNext: _next,
-                    onCyclePlaybackMode: _cyclePlaybackMode,
-                    onVolumeChanged: _setVolume,
-                  ),
-                  if (_errorMessage != null) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      _errorMessage!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
+      body: AnimatedBuilder(
+        animation: _libraryController,
+        builder: (context, _) {
+          final totalSongs = _libraryController.songs.length;
+          final availableSongs = _libraryController.availableSongs.length;
+
+          return Row(
+            children: [
+              AppSidebar(
+                selectedSection: _selectedSection,
+                onSectionSelected: _selectSection,
+                totalSongs: totalSongs,
+                availableSongs: availableSongs,
+              ),
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(28, 24, 28, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            AppTopBar(
+                              title: _pageTitle,
+                              searchController: _searchController,
+                              onSearchChanged: _updateSearch,
+                              onImport: _pickAudioFiles,
+                            ),
+                            if (_errorMessage != null) ...[
+                              const SizedBox(height: 12),
+                              _ErrorBanner(message: _errorMessage!),
+                            ],
+                            const SizedBox(height: 18),
+                            Expanded(child: _buildCurrentPage()),
+                          ],
+                        ),
                       ),
                     ),
+                    MiniPlayerBar(
+                      audioPlayerService: widget.audioPlayerService,
+                      currentSong: _libraryController.currentSong,
+                      canPlayback: _libraryController.hasAvailableSongs,
+                      hasCurrentSong:
+                          _libraryController.currentSong?.isAvailable == true,
+                      isSeeking: _isSeeking,
+                      seekPreviewMs: _seekPreviewMs,
+                      onSeekStart: (value) {
+                        setState(() {
+                          _isSeeking = true;
+                          _seekPreviewMs = value;
+                        });
+                      },
+                      onSeekChanged: (value) {
+                        setState(() {
+                          _seekPreviewMs = value;
+                        });
+                      },
+                      onSeekEnd: (value) async {
+                        setState(() {
+                          _isSeeking = false;
+                        });
+                        await _seekTo(value);
+                      },
+                      onTogglePlayPause: _togglePlayPause,
+                      onPrevious: _previous,
+                      onNext: _next,
+                      onCyclePlaybackMode: _cyclePlaybackMode,
+                      onVolumeChanged: _setVolume,
+                    ),
                   ],
-                ],
-              );
-            },
-          ),
-        ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
+
+  Widget _buildCurrentPage() {
+    return switch (_selectedSection) {
+      AppSection.home => _HomePage(
+        songs: _libraryController.songs,
+        availableSongs: _libraryController.availableSongs,
+        isLoading: _libraryController.isLoading,
+        currentSong: _libraryController.currentSong,
+        onPlayAll: _playAll,
+        onSongTap: _playSong,
+        onFavoriteToggle: _toggleFavorite,
+      ),
+      AppSection.library => _LibraryPage(
+        songs: _filteredSongs(),
+        currentSong: _libraryController.currentSong,
+        isLoading: _libraryController.isLoading,
+        onPlayAll: _playAll,
+        onSongTap: _playSong,
+        onFavoriteToggle: _toggleFavorite,
+      ),
+      AppSection.favorites => _FavoritesPage(
+        songs: _filteredSongs(),
+        currentSong: _libraryController.currentSong,
+        isLoading: _libraryController.isLoading,
+        onPlayAll: _playAll,
+        onSongTap: _playSong,
+        onFavoriteToggle: _toggleFavorite,
+      ),
+      AppSection.playlists => _PlaceholderPage(
+        icon: Icons.queue_music_rounded,
+        title: '播放列表',
+        message: '播放列表管理会在后续阶段单独实现。',
+      ),
+      AppSection.settings => _PlaceholderPage(
+        icon: Icons.settings_rounded,
+        title: '设置',
+        message: '主题、音量持久化和更多设置会在后续阶段实现。',
+      ),
+    };
+  }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({
-    required this.songCount,
-    required this.hasSongs,
-    required this.onImport,
+class _HomePage extends StatelessWidget {
+  const _HomePage({
+    required this.songs,
+    required this.availableSongs,
+    required this.isLoading,
+    required this.currentSong,
     required this.onPlayAll,
+    required this.onSongTap,
+    required this.onFavoriteToggle,
   });
 
-  final int songCount;
-  final bool hasSongs;
-  final VoidCallback onImport;
+  final List<Song> songs;
+  final List<Song> availableSongs;
+  final bool isLoading;
+  final Song? currentSong;
   final VoidCallback onPlayAll;
+  final ValueChanged<Song> onSongTap;
+  final ValueChanged<Song> onFavoriteToggle;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    final favoriteCount = songs.where((song) => song.isFavorite).length;
+    final recentSongs =
+        songs.where((song) => song.lastPlayedAt != null).toList(growable: false)
+          ..sort((a, b) => b.lastPlayedAt!.compareTo(a.lastPlayedAt!));
+
+    return ListView(
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Music Library',
-                style: Theme.of(context).textTheme.headlineMedium,
+        _WelcomeCard(onPlayAll: availableSongs.isEmpty ? null : onPlayAll),
+        const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final columns = constraints.maxWidth >= 980
+                ? 4
+                : constraints.maxWidth >= 720
+                ? 2
+                : 1;
+            return GridView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: columns,
+                crossAxisSpacing: 14,
+                mainAxisSpacing: 14,
+                mainAxisExtent: 92,
               ),
-              const SizedBox(height: 4),
-              Text(
-                '$songCount songs saved locally',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            ],
+              children: [
+                StatCard(
+                  icon: Icons.music_note_rounded,
+                  label: '歌曲总数',
+                  value: songs.length.toString(),
+                ),
+                StatCard(
+                  icon: Icons.check_circle_outline_rounded,
+                  label: '可播放歌曲',
+                  value: availableSongs.length.toString(),
+                ),
+                StatCard(
+                  icon: Icons.favorite_border_rounded,
+                  label: '喜欢歌曲',
+                  value: favoriteCount.toString(),
+                ),
+                StatCard(
+                  icon: Icons.history_rounded,
+                  label: '最近播放',
+                  value: recentSongs.length.toString(),
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 22),
+        Text(
+          '最近播放',
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 260,
+          child: SongListTable(
+            songs: recentSongs.take(5).toList(growable: false),
+            currentSong: currentSong,
+            isLoading: isLoading,
+            onSongTap: onSongTap,
+            onFavoriteToggle: onFavoriteToggle,
+            emptyMessage: '还没有最近播放记录。',
           ),
-        ),
-        OutlinedButton.icon(
-          onPressed: hasSongs ? onPlayAll : null,
-          icon: const Icon(Icons.playlist_play),
-          label: const Text('Play all'),
-        ),
-        const SizedBox(width: 12),
-        FilledButton.icon(
-          onPressed: onImport,
-          icon: const Icon(Icons.audio_file),
-          label: const Text('Import audio'),
         ),
       ],
     );
   }
 }
 
-class _LibraryTable extends StatelessWidget {
-  const _LibraryTable({
-    required this.songs,
-    required this.currentSong,
-    required this.isLoading,
-    required this.onSongTap,
-  });
+class _WelcomeCard extends StatelessWidget {
+  const _WelcomeCard({required this.onPlayAll});
 
-  final List<Song> songs;
-  final Song? currentSong;
-  final bool isLoading;
-  final ValueChanged<Song> onSongTap;
+  final VoidCallback? onPlayAll;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(12),
+        color: const Color(0xFFEAF7F0),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFDCEBE4)),
       ),
-      child: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : songs.isEmpty
-          ? const Center(
-              child: Text('Import MP3, FLAC, or WAV files to start.'),
-            )
-          : Column(
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const _LibraryHeaderRow(),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: songs.length,
-                    separatorBuilder: (context, index) =>
-                        const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final song = songs[index];
-                      return _SongRow(
-                        index: index,
-                        song: song,
-                        isCurrent: currentSong?.id == song.id,
-                        isAvailable: song.isAvailable,
-                        onTap: () => onSongTap(song),
-                      );
-                    },
+                Text(
+                  '欢迎回到 MelodyBox',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '继续管理和播放你的本地音乐库。',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
               ],
             ),
-    );
-  }
-}
-
-class _LibraryHeaderRow extends StatelessWidget {
-  const _LibraryHeaderRow();
-
-  @override
-  Widget build(BuildContext context) {
-    final style = Theme.of(context).textTheme.labelMedium;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      child: Row(
-        children: [
-          SizedBox(width: 40, child: Text('#', style: style)),
-          Expanded(flex: 4, child: Text('Title', style: style)),
-          Expanded(flex: 2, child: Text('Artist', style: style)),
-          Expanded(flex: 2, child: Text('Album', style: style)),
-          SizedBox(width: 72, child: Text('Duration', style: style)),
+          ),
+          FilledButton.icon(
+            onPressed: onPlayAll,
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('播放全部'),
+          ),
         ],
       ),
     );
   }
 }
 
-class _SongRow extends StatelessWidget {
-  const _SongRow({
-    required this.index,
-    required this.song,
-    required this.isCurrent,
-    required this.isAvailable,
-    required this.onTap,
+class _LibraryPage extends StatelessWidget {
+  const _LibraryPage({
+    required this.songs,
+    required this.currentSong,
+    required this.isLoading,
+    required this.onPlayAll,
+    required this.onSongTap,
+    required this.onFavoriteToggle,
   });
 
-  final int index;
-  final Song song;
-  final bool isCurrent;
-  final bool isAvailable;
-  final VoidCallback onTap;
+  final List<Song> songs;
+  final Song? currentSong;
+  final bool isLoading;
+  final VoidCallback onPlayAll;
+  final ValueChanged<Song> onSongTap;
+  final ValueChanged<Song> onFavoriteToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '共 ${songs.length} 首歌曲',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: songs.any((song) => song.isAvailable)
+                  ? onPlayAll
+                  : null,
+              icon: const Icon(Icons.playlist_play_rounded),
+              label: const Text('播放全部'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: SongListTable(
+            songs: songs,
+            currentSong: currentSong,
+            isLoading: isLoading,
+            onSongTap: onSongTap,
+            onFavoriteToggle: onFavoriteToggle,
+            emptyMessage: '没有找到匹配的歌曲。',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FavoritesPage extends StatelessWidget {
+  const _FavoritesPage({
+    required this.songs,
+    required this.currentSong,
+    required this.isLoading,
+    required this.onPlayAll,
+    required this.onSongTap,
+    required this.onFavoriteToggle,
+  });
+
+  final List<Song> songs;
+  final Song? currentSong;
+  final bool isLoading;
+  final VoidCallback onPlayAll;
+  final ValueChanged<Song> onSongTap;
+  final ValueChanged<Song> onFavoriteToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final playableCount = songs.where((song) => song.isAvailable).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '共 ${songs.length} 首喜欢歌曲，$playableCount 首可播放',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: playableCount > 0 ? onPlayAll : null,
+              icon: const Icon(Icons.playlist_play_rounded),
+              label: const Text('播放全部'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: SongListTable(
+            songs: songs,
+            currentSong: currentSong,
+            isLoading: isLoading,
+            onSongTap: onSongTap,
+            onFavoriteToggle: onFavoriteToggle,
+            emptyMessage: '还没有收藏歌曲。',
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PlaceholderPage extends StatelessWidget {
+  const _PlaceholderPage({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Material(
-      color: isCurrent
-          ? colorScheme.primaryContainer.withValues(alpha: 0.42)
-          : Colors.transparent,
-      child: InkWell(
-        onTap: isAvailable ? onTap : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Opacity(
-            opacity: isAvailable ? 1 : 0.48,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 40,
-                  child: Icon(
-                    _leadingIcon,
-                    size: 18,
-                    color: isCurrent
-                        ? colorScheme.primary
-                        : colorScheme.outline,
-                  ),
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Container(
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: const Color(0xFFE3EAE6)),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 42, color: colorScheme.primary),
+              const SizedBox(height: 16),
+              Text(
+                title,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
                 ),
-                Expanded(
-                  flex: 4,
-                  child: Tooltip(
-                    message: song.filePath,
-                    child: Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: isCurrent ? FontWeight.w700 : null,
-                      ),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    song.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    song.album,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                SizedBox(
-                  width: 72,
-                  child: Text(
-                    isAvailable
-                        ? _formatNullableDuration(song.duration)
-                        : 'Missing',
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
-
-  IconData get _leadingIcon {
-    if (!isAvailable) {
-      return Icons.error_outline;
-    }
-
-    return isCurrent ? Icons.volume_up : Icons.music_note;
-  }
 }
 
-class _PlaybackPanel extends StatelessWidget {
-  const _PlaybackPanel({
-    required this.audioPlayerService,
-    required this.canPlayback,
-    required this.hasCurrentSong,
-    required this.isSeeking,
-    required this.seekPreviewMs,
-    required this.onSeekStart,
-    required this.onSeekChanged,
-    required this.onSeekEnd,
-    required this.onTogglePlayPause,
-    required this.onPrevious,
-    required this.onNext,
-    required this.onCyclePlaybackMode,
-    required this.onVolumeChanged,
-  });
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
 
-  final AudioPlayerServiceBase audioPlayerService;
-  final bool canPlayback;
-  final bool hasCurrentSong;
-  final bool isSeeking;
-  final double seekPreviewMs;
-  final ValueChanged<double> onSeekStart;
-  final ValueChanged<double> onSeekChanged;
-  final ValueChanged<double> onSeekEnd;
-  final Future<void> Function(bool isPlaying) onTogglePlayPause;
-  final VoidCallback onPrevious;
-  final VoidCallback onNext;
-  final VoidCallback onCyclePlaybackMode;
-  final ValueChanged<double> onVolumeChanged;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<bool>(
-      stream: audioPlayerService.playingStream,
-      initialData: false,
-      builder: (context, playingSnapshot) {
-        final isPlaying = playingSnapshot.data ?? false;
+    final colorScheme = Theme.of(context).colorScheme;
 
-        return StreamBuilder<PlaybackMode>(
-          stream: audioPlayerService.playbackModeStream,
-          initialData: audioPlayerService.playbackMode,
-          builder: (context, playbackModeSnapshot) {
-            final playbackMode =
-                playbackModeSnapshot.data ?? PlaybackMode.sequence;
-
-            return StreamBuilder<double>(
-              stream: audioPlayerService.volumeStream,
-              initialData: audioPlayerService.volume,
-              builder: (context, volumeSnapshot) {
-                final volume = volumeSnapshot.data ?? 1;
-
-                return StreamBuilder<Duration>(
-                  stream: audioPlayerService.durationStream,
-                  initialData: Duration.zero,
-                  builder: (context, durationSnapshot) {
-                    final duration = durationSnapshot.data ?? Duration.zero;
-
-                    return StreamBuilder<Duration>(
-                      stream: audioPlayerService.positionStream,
-                      initialData: Duration.zero,
-                      builder: (context, positionSnapshot) {
-                        final position = positionSnapshot.data ?? Duration.zero;
-                        final maxMs = math.max(
-                          duration.inMilliseconds.toDouble(),
-                          1,
-                        );
-                        final rawValue = isSeeking
-                            ? seekPreviewMs
-                            : position.inMilliseconds.toDouble();
-                        final sliderValue = rawValue.clamp(0, maxMs).toDouble();
-
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Slider(
-                              value: sliderValue,
-                              min: 0,
-                              max: maxMs.toDouble(),
-                              onChangeStart: hasCurrentSong
-                                  ? onSeekStart
-                                  : null,
-                              onChanged: hasCurrentSong ? onSeekChanged : null,
-                              onChangeEnd: hasCurrentSong ? onSeekEnd : null,
-                            ),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  _formatDuration(
-                                    Duration(milliseconds: sliderValue.round()),
-                                  ),
-                                ),
-                                Text(_formatNullableDuration(duration)),
-                              ],
-                            ),
-                            const SizedBox(height: 12),
-                            Wrap(
-                              alignment: WrapAlignment.center,
-                              crossAxisAlignment: WrapCrossAlignment.center,
-                              spacing: 12,
-                              runSpacing: 8,
-                              children: [
-                                IconButton.filledTonal(
-                                  onPressed: hasCurrentSong ? onPrevious : null,
-                                  tooltip: 'Previous',
-                                  icon: const Icon(Icons.skip_previous),
-                                ),
-                                FilledButton.icon(
-                                  onPressed: canPlayback
-                                      ? () => onTogglePlayPause(isPlaying)
-                                      : null,
-                                  icon: Icon(
-                                    isPlaying ? Icons.pause : Icons.play_arrow,
-                                  ),
-                                  label: Text(isPlaying ? 'Pause' : 'Play'),
-                                ),
-                                IconButton.filledTonal(
-                                  onPressed: hasCurrentSong ? onNext : null,
-                                  tooltip: 'Next',
-                                  icon: const Icon(Icons.skip_next),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: onCyclePlaybackMode,
-                                  icon: Icon(_playbackModeIcon(playbackMode)),
-                                  label: Text(_playbackModeLabel(playbackMode)),
-                                ),
-                                SizedBox(
-                                  width: 220,
-                                  child: Row(
-                                    children: [
-                                      const Icon(Icons.volume_up, size: 20),
-                                      Expanded(
-                                        child: Slider(
-                                          value: volume.clamp(0, 1).toDouble(),
-                                          min: 0,
-                                          max: 1,
-                                          onChanged: onVolumeChanged,
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 40,
-                                        child: Text(
-                                          '${(volume * 100).round()}%',
-                                          textAlign: TextAlign.right,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        );
-                      },
-                    );
-                  },
-                );
-              },
-            );
-          },
-        );
-      },
-    );
-  }
-}
-
-class _SelectedSongInfo extends StatelessWidget {
-  const _SelectedSongInfo({required this.song});
-
-  final Song? song;
-
-  @override
-  Widget build(BuildContext context) {
-    final currentSong = song;
-
-    return DecoratedBox(
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        color: colorScheme.errorContainer,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              currentSong?.title ?? 'No song playing',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+      child: Row(
+        children: [
+          Icon(Icons.error_outline_rounded, color: colorScheme.error),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: colorScheme.onErrorContainer),
             ),
-            if (currentSong != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                currentSong.filePath,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
-}
-
-String _formatNullableDuration(Duration? duration) {
-  if (duration == null || duration <= Duration.zero) {
-    return '--';
-  }
-
-  return _formatDuration(duration);
-}
-
-String _formatDuration(Duration duration) {
-  final totalSeconds = duration.inSeconds;
-  final minutes = totalSeconds ~/ 60;
-  final seconds = totalSeconds % 60;
-  return '$minutes:${seconds.toString().padLeft(2, '0')}';
-}
-
-String _playbackModeLabel(PlaybackMode mode) {
-  return switch (mode) {
-    PlaybackMode.sequence => 'Sequence',
-    PlaybackMode.repeatAll => 'Repeat all',
-    PlaybackMode.repeatOne => 'Repeat one',
-    PlaybackMode.shuffle => 'Shuffle',
-  };
-}
-
-IconData _playbackModeIcon(PlaybackMode mode) {
-  return switch (mode) {
-    PlaybackMode.sequence => Icons.trending_flat,
-    PlaybackMode.repeatAll => Icons.repeat,
-    PlaybackMode.repeatOne => Icons.repeat_one,
-    PlaybackMode.shuffle => Icons.shuffle,
-  };
 }

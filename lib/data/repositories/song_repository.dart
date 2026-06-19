@@ -12,6 +12,8 @@ abstract interface class SongRepositoryBase {
 
   Future<void> updateDuration(Song song, Duration duration);
 
+  Future<void> setFavorite(Song song, bool isFavorite);
+
   Future<void> markPlayed(Song song);
 
   Future<void> dispose();
@@ -84,6 +86,16 @@ class SongRepository implements SongRepositoryBase {
       id: databaseId,
       durationMs: duration.inMilliseconds,
     );
+  }
+
+  @override
+  Future<void> setFavorite(Song song, bool isFavorite) async {
+    final databaseId = song.databaseId;
+    if (databaseId == null) {
+      return;
+    }
+
+    await _songDao.updateFavorite(id: databaseId, isFavorite: isFavorite);
   }
 
   @override

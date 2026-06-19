@@ -72,6 +72,15 @@ class SongDao extends DatabaseAccessor<AppDatabase> with _$SongDaoMixin {
     );
   }
 
+  Future<void> updateFavorite({
+    required int id,
+    required bool isFavorite,
+  }) async {
+    await (update(songs)..where((song) => song.id.equals(id))).write(
+      SongsCompanion(isFavorite: Value(isFavorite)),
+    );
+  }
+
   Future<void> markPlayed(int id) async {
     final song = await (select(
       songs,

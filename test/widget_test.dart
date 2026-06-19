@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
 
 import 'package:local_music_player2/data/repositories/song_repository.dart';
 import 'package:local_music_player2/main.dart';
@@ -7,9 +8,7 @@ import 'package:local_music_player2/models/song.dart';
 import 'package:local_music_player2/services/audio_player_service.dart';
 
 void main() {
-  testWidgets('shows the in-memory library controls', (
-    WidgetTester tester,
-  ) async {
+  testWidgets('shows the main shell controls', (WidgetTester tester) async {
     await tester.pumpWidget(
       MelodyBoxApp(
         audioPlayerService: _FakeAudioPlayerService(),
@@ -19,12 +18,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('MelodyBox'), findsOneWidget);
-    expect(find.text('Music Library'), findsOneWidget);
-    expect(find.text('Import audio'), findsOneWidget);
-    expect(find.text('Play all'), findsOneWidget);
-    expect(find.text('No song playing'), findsOneWidget);
-    expect(find.text('Play'), findsOneWidget);
-    expect(find.text('Sequence'), findsOneWidget);
+    expect(find.text('首页'), findsWidgets);
+    expect(find.text('导入音乐'), findsOneWidget);
+    expect(find.text('播放全部'), findsOneWidget);
+    expect(find.text('暂无播放'), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
   });
 }
 
@@ -44,6 +42,9 @@ class _FakeSongRepository implements SongRepositoryBase {
 
   @override
   Future<void> markPlayed(Song song) async {}
+
+  @override
+  Future<void> setFavorite(Song song, bool isFavorite) async {}
 
   @override
   Future<void> updateDuration(Song song, Duration duration) async {}
