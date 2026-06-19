@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'models/song.dart';
 import 'services/audio_player_service.dart';
+import 'state/library_controller.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -60,12 +63,34 @@ class PlayerPage extends StatefulWidget {
 }
 
 class _PlayerPageState extends State<PlayerPage> {
-  String? _selectedFilePath;
+  late final LibraryController _libraryController;
+  late final StreamSubscription<Song?> _currentSongSubscription;
+  late final StreamSubscription<Duration> _durationSubscription;
+
   String? _errorMessage;
   bool _isSeeking = false;
   double _seekPreviewMs = 0;
 
-  Future<void> _pickAudioFile() async {
+  @override
+  void initState() {
+    super.initState();
+    _libraryController = LibraryController();
+    _currentSongSubscription = widget.audioPlayerService.currentSongStream
+        .listen(_libraryController.setCurrentSong);
+    _durationSubscription = widget.audioPlayerService.durationStream.listen(
+      _libraryController.updateCurrentSongDuration,
+    );
+  }
+
+  @override
+  void dispose() {
+    _currentSongSubscription.cancel();
+    _durationSubscription.cancel();
+    _libraryController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickAudioFiles() async {
     setState(() {
       _errorMessage = null;
     });
@@ -74,72 +99,113 @@ class _PlayerPageState extends State<PlayerPage> {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: const ['mp3', 'flac', 'wav'],
-        allowMultiple: false,
+        allowMultiple: true,
       );
 
-      final path = result?.files.single.path;
-      if (path == null) {
+      final paths = result?.files
+          .map((file) => file.path)
+          .whereType<String>()
+          .toList();
+      if (paths == null || paths.isEmpty) {
         return;
       }
 
-      await widget.audioPlayerService.loadFile(path);
-
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _selectedFilePath = path;
-      });
+      _libraryController.addFiles(paths);
     } catch (error) {
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _errorMessage = 'Unable to load this audio file.';
+        _errorMessage = 'Unable to import the selected audio files.';
       });
     }
   }
 
-  Future<void> _togglePlayPause(bool isPlaying) async {
-    if (_selectedFilePath == null) {
+  Future<void> _playAll() async {
+    final songs = _libraryController.songs;
+    if (songs.isEmpty) {
       return;
     }
 
+    await _runPlaybackAction(
+      () => widget.audioPlayerService.playQueue(songs: songs, startIndex: 0),
+      errorMessage: 'Unable to play the library.',
+    );
+  }
+
+  Future<void> _playSong(Song song) async {
+    final songs = _libraryController.songs;
+    final index = _libraryController.indexOf(song);
+    if (index == -1) {
+      return;
+    }
+
+    await _runPlaybackAction(
+      () =>
+          widget.audioPlayerService.playQueue(songs: songs, startIndex: index),
+      errorMessage: 'Unable to play this song.',
+    );
+  }
+
+  Future<void> _togglePlayPause(bool isPlaying) async {
+    final currentSong = _libraryController.currentSong;
+    final songs = _libraryController.songs;
+    if (currentSong == null && songs.isEmpty) {
+      return;
+    }
+
+    await _runPlaybackAction(() async {
+      if (currentSong == null) {
+        await widget.audioPlayerService.playQueue(songs: songs, startIndex: 0);
+      } else if (isPlaying) {
+        await widget.audioPlayerService.pause();
+      } else {
+        await widget.audioPlayerService.resume();
+      }
+    }, errorMessage: 'Playback failed.');
+  }
+
+  Future<void> _seekTo(double milliseconds) async {
+    await _runPlaybackAction(
+      () => widget.audioPlayerService.seek(
+        Duration(milliseconds: milliseconds.round()),
+      ),
+      errorMessage: 'Unable to change playback position.',
+    );
+  }
+
+  Future<void> _previous() async {
+    await _runPlaybackAction(
+      widget.audioPlayerService.previous,
+      errorMessage: 'Unable to play the previous song.',
+    );
+  }
+
+  Future<void> _next() async {
+    await _runPlaybackAction(
+      widget.audioPlayerService.next,
+      errorMessage: 'Unable to play the next song.',
+    );
+  }
+
+  Future<void> _runPlaybackAction(
+    Future<void> Function() action, {
+    required String errorMessage,
+  }) async {
     setState(() {
       _errorMessage = null;
     });
 
     try {
-      if (isPlaying) {
-        await widget.audioPlayerService.pause();
-      } else {
-        await widget.audioPlayerService.resume();
-      }
+      await action();
     } catch (error) {
       if (!mounted) {
         return;
       }
 
       setState(() {
-        _errorMessage = 'Playback failed.';
-      });
-    }
-  }
-
-  Future<void> _seekTo(double milliseconds) async {
-    try {
-      await widget.audioPlayerService.seek(
-        Duration(milliseconds: milliseconds.round()),
-      );
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _errorMessage = 'Unable to change playback position.';
+        _errorMessage = errorMessage;
       });
     }
   }
@@ -148,68 +214,268 @@ class _PlayerPageState extends State<PlayerPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('MelodyBox')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Local music MVP',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Select one MP3, FLAC, or WAV file and control playback.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 24),
-                FilledButton.icon(
-                  onPressed: _pickAudioFile,
-                  icon: const Icon(Icons.audio_file),
-                  label: const Text('Select audio file'),
-                ),
-                const SizedBox(height: 24),
-                _SelectedFileInfo(filePath: _selectedFilePath),
-                const SizedBox(height: 16),
-                _PlaybackPanel(
-                  audioPlayerService: widget.audioPlayerService,
-                  hasFile: _selectedFilePath != null,
-                  isSeeking: _isSeeking,
-                  seekPreviewMs: _seekPreviewMs,
-                  onSeekStart: (value) {
-                    setState(() {
-                      _isSeeking = true;
-                      _seekPreviewMs = value;
-                    });
-                  },
-                  onSeekChanged: (value) {
-                    setState(() {
-                      _seekPreviewMs = value;
-                    });
-                  },
-                  onSeekEnd: (value) async {
-                    setState(() {
-                      _isSeeking = false;
-                    });
-                    await _seekTo(value);
-                  },
-                  onTogglePlayPause: _togglePlayPause,
-                ),
-                if (_errorMessage != null) ...[
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: AnimatedBuilder(
+            animation: _libraryController,
+            builder: (context, _) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _Header(
+                    songCount: _libraryController.songs.length,
+                    hasSongs: _libraryController.hasSongs,
+                    onImport: _pickAudioFiles,
+                    onPlayAll: _playAll,
+                  ),
                   const SizedBox(height: 16),
-                  Text(
-                    _errorMessage!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+                  Expanded(
+                    child: _LibraryTable(
+                      songs: _libraryController.songs,
+                      currentSong: _libraryController.currentSong,
+                      onSongTap: _playSong,
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  _SelectedSongInfo(song: _libraryController.currentSong),
+                  const SizedBox(height: 16),
+                  _PlaybackPanel(
+                    audioPlayerService: widget.audioPlayerService,
+                    canPlayback: _libraryController.hasSongs,
+                    hasCurrentSong: _libraryController.currentSong != null,
+                    isSeeking: _isSeeking,
+                    seekPreviewMs: _seekPreviewMs,
+                    onSeekStart: (value) {
+                      setState(() {
+                        _isSeeking = true;
+                        _seekPreviewMs = value;
+                      });
+                    },
+                    onSeekChanged: (value) {
+                      setState(() {
+                        _seekPreviewMs = value;
+                      });
+                    },
+                    onSeekEnd: (value) async {
+                      setState(() {
+                        _isSeeking = false;
+                      });
+                      await _seekTo(value);
+                    },
+                    onTogglePlayPause: _togglePlayPause,
+                    onPrevious: _previous,
+                    onNext: _next,
+                  ),
+                  if (_errorMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      _errorMessage!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ],
                 ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({
+    required this.songCount,
+    required this.hasSongs,
+    required this.onImport,
+    required this.onPlayAll,
+  });
+
+  final int songCount;
+  final bool hasSongs;
+  final VoidCallback onImport;
+  final VoidCallback onPlayAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Music Library',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '$songCount songs in memory',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
+        OutlinedButton.icon(
+          onPressed: hasSongs ? onPlayAll : null,
+          icon: const Icon(Icons.playlist_play),
+          label: const Text('Play all'),
+        ),
+        const SizedBox(width: 12),
+        FilledButton.icon(
+          onPressed: onImport,
+          icon: const Icon(Icons.audio_file),
+          label: const Text('Import audio'),
+        ),
+      ],
+    );
+  }
+}
+
+class _LibraryTable extends StatelessWidget {
+  const _LibraryTable({
+    required this.songs,
+    required this.currentSong,
+    required this.onSongTap,
+  });
+
+  final List<Song> songs;
+  final Song? currentSong;
+  final ValueChanged<Song> onSongTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: songs.isEmpty
+          ? const Center(
+              child: Text('Import MP3, FLAC, or WAV files to start.'),
+            )
+          : Column(
+              children: [
+                const _LibraryHeaderRow(),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: songs.length,
+                    separatorBuilder: (context, index) =>
+                        const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final song = songs[index];
+                      return _SongRow(
+                        index: index,
+                        song: song,
+                        isCurrent: currentSong?.id == song.id,
+                        onTap: () => onSongTap(song),
+                      );
+                    },
+                  ),
+                ),
               ],
             ),
+    );
+  }
+}
+
+class _LibraryHeaderRow extends StatelessWidget {
+  const _LibraryHeaderRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.labelMedium;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          SizedBox(width: 40, child: Text('#', style: style)),
+          Expanded(flex: 4, child: Text('Title', style: style)),
+          Expanded(flex: 2, child: Text('Artist', style: style)),
+          Expanded(flex: 2, child: Text('Album', style: style)),
+          SizedBox(width: 72, child: Text('Duration', style: style)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SongRow extends StatelessWidget {
+  const _SongRow({
+    required this.index,
+    required this.song,
+    required this.isCurrent,
+    required this.onTap,
+  });
+
+  final int index;
+  final Song song;
+  final bool isCurrent;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Material(
+      color: isCurrent
+          ? colorScheme.primaryContainer.withValues(alpha: 0.42)
+          : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 40,
+                child: Icon(
+                  isCurrent ? Icons.volume_up : Icons.music_note,
+                  size: 18,
+                  color: isCurrent ? colorScheme.primary : colorScheme.outline,
+                ),
+              ),
+              Expanded(
+                flex: 4,
+                child: Tooltip(
+                  message: song.filePath,
+                  child: Text(
+                    song.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: isCurrent ? FontWeight.w700 : null,
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  song.artist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  song.album,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              SizedBox(
+                width: 72,
+                child: Text(_formatNullableDuration(song.duration)),
+              ),
+            ],
           ),
         ),
       ),
@@ -220,23 +486,29 @@ class _PlayerPageState extends State<PlayerPage> {
 class _PlaybackPanel extends StatelessWidget {
   const _PlaybackPanel({
     required this.audioPlayerService,
-    required this.hasFile,
+    required this.canPlayback,
+    required this.hasCurrentSong,
     required this.isSeeking,
     required this.seekPreviewMs,
     required this.onSeekStart,
     required this.onSeekChanged,
     required this.onSeekEnd,
     required this.onTogglePlayPause,
+    required this.onPrevious,
+    required this.onNext,
   });
 
   final AudioPlayerServiceBase audioPlayerService;
-  final bool hasFile;
+  final bool canPlayback;
+  final bool hasCurrentSong;
   final bool isSeeking;
   final double seekPreviewMs;
   final ValueChanged<double> onSeekStart;
   final ValueChanged<double> onSeekChanged;
   final ValueChanged<double> onSeekEnd;
   final Future<void> Function(bool isPlaying) onTogglePlayPause;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
 
   @override
   Widget build(BuildContext context) {
@@ -270,9 +542,9 @@ class _PlaybackPanel extends StatelessWidget {
                       value: sliderValue,
                       min: 0,
                       max: maxMs.toDouble(),
-                      onChangeStart: hasFile ? onSeekStart : null,
-                      onChanged: hasFile ? onSeekChanged : null,
-                      onChangeEnd: hasFile ? onSeekEnd : null,
+                      onChangeStart: hasCurrentSong ? onSeekStart : null,
+                      onChanged: hasCurrentSong ? onSeekChanged : null,
+                      onChangeEnd: hasCurrentSong ? onSeekEnd : null,
                     ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -282,18 +554,35 @@ class _PlaybackPanel extends StatelessWidget {
                             Duration(milliseconds: sliderValue.round()),
                           ),
                         ),
-                        Text(_formatDuration(duration)),
+                        Text(_formatNullableDuration(duration)),
                       ],
                     ),
-                    const SizedBox(height: 16),
-                    Center(
-                      child: FilledButton.icon(
-                        onPressed: hasFile
-                            ? () => onTogglePlayPause(isPlaying)
-                            : null,
-                        icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                        label: Text(isPlaying ? 'Pause' : 'Play'),
-                      ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        IconButton.filledTonal(
+                          onPressed: hasCurrentSong ? onPrevious : null,
+                          tooltip: 'Previous',
+                          icon: const Icon(Icons.skip_previous),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: canPlayback
+                              ? () => onTogglePlayPause(isPlaying)
+                              : null,
+                          icon: Icon(
+                            isPlaying ? Icons.pause : Icons.play_arrow,
+                          ),
+                          label: Text(isPlaying ? 'Pause' : 'Play'),
+                        ),
+                        const SizedBox(width: 12),
+                        IconButton.filledTonal(
+                          onPressed: hasCurrentSong ? onNext : null,
+                          tooltip: 'Next',
+                          icon: const Icon(Icons.skip_next),
+                        ),
+                      ],
                     ),
                   ],
                 );
@@ -306,15 +595,14 @@ class _PlaybackPanel extends StatelessWidget {
   }
 }
 
-class _SelectedFileInfo extends StatelessWidget {
-  const _SelectedFileInfo({required this.filePath});
+class _SelectedSongInfo extends StatelessWidget {
+  const _SelectedSongInfo({required this.song});
 
-  final String? filePath;
+  final Song? song;
 
   @override
   Widget build(BuildContext context) {
-    final path = filePath;
-    final title = path == null ? 'No file selected' : _fileNameFromPath(path);
+    final currentSong = song;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -327,16 +615,16 @@ class _SelectedFileInfo extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              title,
+              currentSong?.title ?? 'No song playing',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            if (path != null) ...[
+            if (currentSong != null) ...[
               const SizedBox(height: 4),
               Text(
-                path,
-                maxLines: 2,
+                currentSong.filePath,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
@@ -348,8 +636,12 @@ class _SelectedFileInfo extends StatelessWidget {
   }
 }
 
-String _fileNameFromPath(String path) {
-  return path.split(RegExp(r'[\\/]')).last;
+String _formatNullableDuration(Duration? duration) {
+  if (duration == null || duration <= Duration.zero) {
+    return '--';
+  }
+
+  return _formatDuration(duration);
 }
 
 String _formatDuration(Duration duration) {

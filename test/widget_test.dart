@@ -1,17 +1,22 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:local_music_player2/main.dart';
+import 'package:local_music_player2/models/song.dart';
 import 'package:local_music_player2/services/audio_player_service.dart';
 
 void main() {
-  testWidgets('shows the MVP player controls', (WidgetTester tester) async {
+  testWidgets('shows the in-memory library controls', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(
       MelodyBoxApp(audioPlayerService: _FakeAudioPlayerService()),
     );
 
     expect(find.text('MelodyBox'), findsOneWidget);
-    expect(find.text('Select audio file'), findsOneWidget);
-    expect(find.text('No file selected'), findsOneWidget);
+    expect(find.text('Music Library'), findsOneWidget);
+    expect(find.text('Import audio'), findsOneWidget);
+    expect(find.text('Play all'), findsOneWidget);
+    expect(find.text('No song playing'), findsOneWidget);
     expect(find.text('Play'), findsOneWidget);
   });
 }
@@ -21,7 +26,13 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
   String? get currentFilePath => null;
 
   @override
+  Song? get currentSong => null;
+
+  @override
   Stream<String?> get currentFileStream => const Stream.empty();
+
+  @override
+  Stream<Song?> get currentSongStream => const Stream.empty();
 
   @override
   Stream<Duration> get durationStream => const Stream.empty();
@@ -39,6 +50,12 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
   Future<void> loadFile(String filePath) async {}
 
   @override
+  Future<void> loadSong(Song song) async {}
+
+  @override
+  Future<void> next() async {}
+
+  @override
   Future<void> pause() async {}
 
   @override
@@ -46,6 +63,18 @@ class _FakeAudioPlayerService implements AudioPlayerServiceBase {
 
   @override
   Future<void> playFile(String filePath) async {}
+
+  @override
+  Future<void> playQueue({
+    required List<Song> songs,
+    required int startIndex,
+  }) async {}
+
+  @override
+  Future<void> playSong(Song song) async {}
+
+  @override
+  Future<void> previous() async {}
 
   @override
   Future<void> resume() async {}
