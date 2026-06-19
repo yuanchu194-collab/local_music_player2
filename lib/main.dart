@@ -5,6 +5,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'data/db/app_database.dart';
+import 'data/repositories/song_repository.dart';
 import 'models/song.dart';
 import 'services/audio_player_service.dart';
 import 'state/library_controller.dart';
@@ -16,9 +18,10 @@ void main() {
 }
 
 class MelodyBoxApp extends StatefulWidget {
-  const MelodyBoxApp({super.key, this.audioPlayerService});
+  const MelodyBoxApp({super.key, this.audioPlayerService, this.songRepository});
 
   final AudioPlayerServiceBase? audioPlayerService;
+  final SongRepositoryBase? songRepository;
 
   @override
   State<MelodyBoxApp> createState() => _MelodyBoxAppState();
@@ -26,16 +29,19 @@ class MelodyBoxApp extends StatefulWidget {
 
 class _MelodyBoxAppState extends State<MelodyBoxApp> {
   late final AudioPlayerServiceBase _audioPlayerService;
+  late final SongRepositoryBase _songRepository;
 
   @override
   void initState() {
     super.initState();
     _audioPlayerService = widget.audioPlayerService ?? AudioPlayerService();
+    _songRepository = widget.songRepository ?? SongRepository(AppDatabase());
   }
 
   @override
   void dispose() {
     _audioPlayerService.dispose();
+    _songRepository.dispose();
     super.dispose();
   }
 
@@ -48,15 +54,23 @@ class _MelodyBoxAppState extends State<MelodyBoxApp> {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF22A96B)),
         useMaterial3: true,
       ),
-      home: PlayerPage(audioPlayerService: _audioPlayerService),
+      home: PlayerPage(
+        audioPlayerService: _audioPlayerService,
+        songRepository: _songRepository,
+      ),
     );
   }
 }
 
 class PlayerPage extends StatefulWidget {
-  const PlayerPage({super.key, required this.audioPlayerService});
+  const PlayerPage({
+    super.key,
+    required this.audioPlayerService,
+    required this.songRepository,
+  });
 
   final AudioPlayerServiceBase audioPlayerService;
+  final SongRepositoryBase songRepository;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -74,11 +88,15 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
-    _libraryController = LibraryController();
+    _libraryController = LibraryController(
+      songRepository: widget.songRepository,
+    );
+    unawaited(_libraryController.loadLibrary());
     _currentSongSubscription = widget.audioPlayerService.currentSongStream
-        .listen(_libraryController.setCurrentSong);
+        .listen((song) => unawaited(_libraryController.setCurrentSong(song)));
     _durationSubscription = widget.audioPlayerService.durationStream.listen(
-      _libraryController.updateCurrentSongDuration,
+      (duration) =>
+          unawaited(_libraryController.updateCurrentSongDuration(duration)),
     );
   }
 
@@ -110,7 +128,7 @@ class _PlayerPageState extends State<PlayerPage> {
         return;
       }
 
-      _libraryController.addFiles(paths);
+      await _libraryController.importFiles(paths);
     } catch (error) {
       if (!mounted) {
         return;
@@ -123,7 +141,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _playAll() async {
-    final songs = _libraryController.songs;
+    final songs = _libraryController.availableSongs;
     if (songs.isEmpty) {
       return;
     }
@@ -135,8 +153,16 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _playSong(Song song) async {
-    final songs = _libraryController.songs;
-    final index = _libraryController.indexOf(song);
+    if (!song.isAvailable) {
+      setState(() {
+        _errorMessage =
+            'This file is unavailable. It may have been moved or deleted.';
+      });
+      return;
+    }
+
+    final songs = _libraryController.availableSongs;
+    final index = _libraryController.indexOfAvailableSong(song);
     if (index == -1) {
       return;
     }
@@ -150,7 +176,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Future<void> _togglePlayPause(bool isPlaying) async {
     final currentSong = _libraryController.currentSong;
-    final songs = _libraryController.songs;
+    final songs = _libraryController.availableSongs;
     if (currentSong == null && songs.isEmpty) {
       return;
     }
@@ -225,7 +251,7 @@ class _PlayerPageState extends State<PlayerPage> {
                 children: [
                   _Header(
                     songCount: _libraryController.songs.length,
-                    hasSongs: _libraryController.hasSongs,
+                    hasSongs: _libraryController.hasAvailableSongs,
                     onImport: _pickAudioFiles,
                     onPlayAll: _playAll,
                   ),
@@ -234,6 +260,7 @@ class _PlayerPageState extends State<PlayerPage> {
                     child: _LibraryTable(
                       songs: _libraryController.songs,
                       currentSong: _libraryController.currentSong,
+                      isLoading: _libraryController.isLoading,
                       onSongTap: _playSong,
                     ),
                   ),
@@ -242,8 +269,9 @@ class _PlayerPageState extends State<PlayerPage> {
                   const SizedBox(height: 16),
                   _PlaybackPanel(
                     audioPlayerService: widget.audioPlayerService,
-                    canPlayback: _libraryController.hasSongs,
-                    hasCurrentSong: _libraryController.currentSong != null,
+                    canPlayback: _libraryController.hasAvailableSongs,
+                    hasCurrentSong:
+                        _libraryController.currentSong?.isAvailable == true,
                     isSeeking: _isSeeking,
                     seekPreviewMs: _seekPreviewMs,
                     onSeekStart: (value) {
@@ -314,7 +342,7 @@ class _Header extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                '$songCount songs in memory',
+                '$songCount songs saved locally',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ],
@@ -340,11 +368,13 @@ class _LibraryTable extends StatelessWidget {
   const _LibraryTable({
     required this.songs,
     required this.currentSong,
+    required this.isLoading,
     required this.onSongTap,
   });
 
   final List<Song> songs;
   final Song? currentSong;
+  final bool isLoading;
   final ValueChanged<Song> onSongTap;
 
   @override
@@ -354,7 +384,9 @@ class _LibraryTable extends StatelessWidget {
         border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: songs.isEmpty
+      child: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : songs.isEmpty
           ? const Center(
               child: Text('Import MP3, FLAC, or WAV files to start.'),
             )
@@ -373,6 +405,7 @@ class _LibraryTable extends StatelessWidget {
                         index: index,
                         song: song,
                         isCurrent: currentSong?.id == song.id,
+                        isAvailable: song.isAvailable,
                         onTap: () => onSongTap(song),
                       );
                     },
@@ -411,12 +444,14 @@ class _SongRow extends StatelessWidget {
     required this.index,
     required this.song,
     required this.isCurrent,
+    required this.isAvailable,
     required this.onTap,
   });
 
   final int index;
   final Song song;
   final bool isCurrent;
+  final bool isAvailable;
   final VoidCallback onTap;
 
   @override
@@ -428,58 +463,75 @@ class _SongRow extends StatelessWidget {
           ? colorScheme.primaryContainer.withValues(alpha: 0.42)
           : Colors.transparent,
       child: InkWell(
-        onTap: onTap,
+        onTap: isAvailable ? onTap : null,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 40,
-                child: Icon(
-                  isCurrent ? Icons.volume_up : Icons.music_note,
-                  size: 18,
-                  color: isCurrent ? colorScheme.primary : colorScheme.outline,
+          child: Opacity(
+            opacity: isAvailable ? 1 : 0.48,
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 40,
+                  child: Icon(
+                    _leadingIcon,
+                    size: 18,
+                    color: isCurrent
+                        ? colorScheme.primary
+                        : colorScheme.outline,
+                  ),
                 ),
-              ),
-              Expanded(
-                flex: 4,
-                child: Tooltip(
-                  message: song.filePath,
-                  child: Text(
-                    song.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontWeight: isCurrent ? FontWeight.w700 : null,
+                Expanded(
+                  flex: 4,
+                  child: Tooltip(
+                    message: song.filePath,
+                    child: Text(
+                      song.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: isCurrent ? FontWeight.w700 : null,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(
-                  song.artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    song.artist,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(
-                  song.album,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    song.album,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-              SizedBox(
-                width: 72,
-                child: Text(_formatNullableDuration(song.duration)),
-              ),
-            ],
+                SizedBox(
+                  width: 72,
+                  child: Text(
+                    isAvailable
+                        ? _formatNullableDuration(song.duration)
+                        : 'Missing',
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  IconData get _leadingIcon {
+    if (!isAvailable) {
+      return Icons.error_outline;
+    }
+
+    return isCurrent ? Icons.volume_up : Icons.music_note;
   }
 }
 

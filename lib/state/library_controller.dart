@@ -1,56 +1,76 @@
 import 'package:flutter/foundation.dart';
 
+import '../data/repositories/song_repository.dart';
 import '../models/song.dart';
 
 class LibraryController extends ChangeNotifier {
+  LibraryController({required this.songRepository});
+
+  final SongRepositoryBase songRepository;
   final List<Song> _songs = [];
+
   Song? _currentSong;
+  bool _isLoading = false;
 
   List<Song> get songs => List.unmodifiable(_songs);
+
+  List<Song> get availableSongs =>
+      _songs.where((song) => song.isAvailable).toList(growable: false);
 
   Song? get currentSong => _currentSong;
 
   bool get hasSongs => _songs.isNotEmpty;
 
-  void addFiles(Iterable<String> filePaths) {
-    var changed = false;
-    final existingPaths = _songs.map((song) => song.filePath).toSet();
+  bool get hasAvailableSongs => availableSongs.isNotEmpty;
 
-    for (final filePath in filePaths) {
-      if (existingPaths.add(filePath)) {
-        _songs.add(Song.fromFilePath(filePath));
-        changed = true;
-      }
-    }
+  bool get isLoading => _isLoading;
 
-    if (changed) {
-      notifyListeners();
-    }
+  Future<void> loadLibrary() async {
+    _isLoading = true;
+    notifyListeners();
+
+    final loadedSongs = await songRepository.loadSongs();
+    _songs
+      ..clear()
+      ..addAll(loadedSongs);
+
+    _isLoading = false;
+    notifyListeners();
   }
 
-  void setCurrentSong(Song? song) {
+  Future<void> importFiles(Iterable<String> filePaths) async {
+    final importedSongs = await songRepository.importFiles(filePaths);
+    _songs
+      ..clear()
+      ..addAll(importedSongs);
+    notifyListeners();
+  }
+
+  Future<void> setCurrentSong(Song? song) async {
     if (_currentSong?.id == song?.id) {
       return;
     }
 
     _currentSong = song;
     notifyListeners();
+
+    if (song != null) {
+      await songRepository.markPlayed(song);
+    }
   }
 
-  void updateCurrentSongDuration(Duration duration) {
+  Future<void> updateCurrentSongDuration(Duration duration) async {
     final current = _currentSong;
     if (current == null || duration <= Duration.zero) {
       return;
     }
 
     final index = _songs.indexWhere((song) => song.id == current.id);
-    if (index == -1) {
+    if (index == -1 || _songs[index].duration == duration) {
       return;
     }
 
-    if (_songs[index].duration == duration) {
-      return;
-    }
+    await songRepository.updateDuration(current, duration);
 
     final updated = _songs[index].copyWith(duration: duration);
     _songs[index] = updated;
@@ -58,7 +78,7 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
-  int indexOf(Song song) {
-    return _songs.indexWhere((candidate) => candidate.id == song.id);
+  int indexOfAvailableSong(Song song) {
+    return availableSongs.indexWhere((candidate) => candidate.id == song.id);
   }
 }

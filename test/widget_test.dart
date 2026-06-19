@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:local_music_player2/data/repositories/song_repository.dart';
 import 'package:local_music_player2/main.dart';
 import 'package:local_music_player2/models/song.dart';
 import 'package:local_music_player2/services/audio_player_service.dart';
@@ -9,8 +10,12 @@ void main() {
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
-      MelodyBoxApp(audioPlayerService: _FakeAudioPlayerService()),
+      MelodyBoxApp(
+        audioPlayerService: _FakeAudioPlayerService(),
+        songRepository: _FakeSongRepository(),
+      ),
     );
+    await tester.pumpAndSettle();
 
     expect(find.text('MelodyBox'), findsOneWidget);
     expect(find.text('Music Library'), findsOneWidget);
@@ -19,6 +24,27 @@ void main() {
     expect(find.text('No song playing'), findsOneWidget);
     expect(find.text('Play'), findsOneWidget);
   });
+}
+
+class _FakeSongRepository implements SongRepositoryBase {
+  @override
+  Future<void> dispose() async {}
+
+  @override
+  Future<List<Song>> importFiles(Iterable<String> filePaths) async {
+    return filePaths.map(Song.fromFilePath).toList();
+  }
+
+  @override
+  Future<List<Song>> loadSongs() async {
+    return [];
+  }
+
+  @override
+  Future<void> markPlayed(Song song) async {}
+
+  @override
+  Future<void> updateDuration(Song song, Duration duration) async {}
 }
 
 class _FakeAudioPlayerService implements AudioPlayerServiceBase {
